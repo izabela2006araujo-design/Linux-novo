@@ -1,4 +1,3 @@
-name: Build
 
 on:
   workflow_call:
@@ -10,7 +9,7 @@ on:
       is_qt_cached:
         description: Enable Qt caching or not
         type: string
-        default: true
+        default: "true"
     secrets:
       SPARKLE_ED25519_KEY:
         description: Private key for signing Sparkle updates
@@ -25,11 +24,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-
+          
+          - os: ubuntu-24.04-arm
+            name: "Linux-aarch64"
+            qt_ver: 6
+            qt_host: linux
+            qt_arch: ''
+            qt_version: '6.10.2'
+            qt_modules: 'qt5compat qtimageformats'
+            qt_tools: ''
+          
           - os: ubuntu-20.04
+            name: "Linux"  
             qt_ver: 5
 
           - os: ubuntu-20.04
+            name: "Linux"
             qt_ver: 6
             qt_host: linux
             qt_arch: ''
@@ -166,12 +176,12 @@ jobs:
 
       - name: Retrieve ccache cache (Windows MinGW-w64)
         if: runner.os == 'Windows' && matrix.msystem != '' && inputs.build_type == 'Debug'
-        uses: actions/cache@v3.0.11
+        uses: actions/cache@v4
         with:
           path: '${{ github.workspace }}\.ccache'
           key: ${{ matrix.os }}-mingw-w64
           restore-keys: |
-              ${{ matrix.os }}-mingw-w64
+            ${{ matrix.os }}-mingw-w64
 
       - name: Set short version
         shell: bash
@@ -181,10 +191,8 @@ jobs:
 
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get -y update
-          sudo apt-get -y install ninja-build extra-cmake-modules scdoc
-
+        uses: ./.github/actions/setup-dependencies
+      
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -230,15 +238,6 @@ jobs:
           vsversion: 2022
           arch: ${{ matrix.vcvars_arch }}
 
-      - name: Prepare AppImage (Linux)
-        if: runner.os == 'Linux' && matrix.qt_ver != 5
-        run: |
-          wget "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-          wget "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
-          wget "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
-
-          ${{ github.workspace }}/.github/scripts/prepare_JREs.sh
-
       - name: Add QT_HOST_PATH var (Windows MSVC arm64)
         if: runner.os == 'Windows' && matrix.architecture == 'arm64'
         run: |
@@ -282,8 +281,15 @@ jobs:
       - name: Configure CMake (Linux)
         if: runner.os == 'Linux'
         run: |
-          cmake -S . -B ${{ env.BUILD_DIR }} -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} -DENABLE_LTO=ON -DLauncher_BUILD_PLATFORM=Linux -DCMAKE_C_COMPILER_LAUNCHER=${{ env.CCACHE_VAR }} -DCMAKE_CXX_COMPILER_LAUNCHER=${{ env.CCACHE_VAR }} -DLauncher_QT_VERSION_MAJOR=${{ matrix.qt_ver }} -G Ninja
-
+          cmake -S . -B ${{ env.BUILD_DIR }} \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DENABLE_LTO=ON \
+            -DLauncher_BUILD_PLATFORM=${{ matrix.name }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=${{ env.CCACHE_VAR }} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=${{ env.CCACHE_VAR }} \
+            -DLauncher_QT_VERSION_MAJOR=${{ matrix.qt_ver }} \
+            -G Ninja
       ##
       # BUILD
       ##
@@ -413,36 +419,57 @@ jobs:
           tar -czf ../PrismLauncher-portable.tar.gz *
 
       - name: Package AppImage (Linux)
-        if: runner.os == 'Linux' && matrix.qt_ver != 5
+        if: runner.os == 'Linux' && matrix.qt_ver != 5 && matrix.name != 'Linux-aarch64'
         shell: bash
         run: |
           cmake --install ${{ env.BUILD_DIR }} --prefix ${{ env.INSTALL_APPIMAGE_DIR }}/usr
 
-          export OUTPUT="PrismLauncher-${{ runner.os }}-${{ env.VERSION }}-${{ inputs.build_type }}-x86_64.AppImage"
+          ARCH="$(dpkg-architecture -q DEB_HOST_ARCH_CPU)"
+          if [ "$ARCH" = "amd64" ]; then
+            APPIMAGE_ARCH="x86_64"
+            LIBDIR="/usr/lib/x86_64-linux-gnu"
+            JAVA8_SERVER_PATH="${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-8-openjdk/lib/amd64/server"
+            JAVA8_BASE_PATH="${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-8-openjdk/lib/amd64"
+          elif [ "$ARCH" = "arm64" ]; then
+            APPIMAGE_ARCH="aarch64"
+            LIBDIR="/usr/lib/aarch64-linux-gnu"
+            JAVA8_SERVER_PATH="${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-8-openjdk/lib/aarch64/server"
+            JAVA8_BASE_PATH="${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-8-openjdk/lib/aarch64"
+          else
+            echo "Unsupported architecture: $ARCH"
+            exit 1
+          fi
 
-          chmod +x linuxdeploy-*.AppImage
+          export OUTPUT="PrismLauncher-Linux-${{ env.VERSION }}-${{ inputs.build_type }}-${APPIMAGE_ARCH}.AppImage"
+
+          chmod +x sharun mkappimage AppImageUpdate
 
           mkdir -p ${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-{8,17}-openjdk
           mkdir -p ${{ env.INSTALL_APPIMAGE_DIR }}/usr/plugins/iconengines
+          mkdir -p ${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib
 
           cp -r ${{ github.workspace }}/JREs/jre8/* ${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-8-openjdk
-
           cp -r ${{ github.workspace }}/JREs/jre17/* ${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-17-openjdk
 
-          cp -r /home/runner/work/PrismLauncher/Qt/${{ matrix.qt_version }}/gcc_64/plugins/iconengines/* ${{ env.INSTALL_APPIMAGE_DIR }}/usr/plugins/iconengines
-          
-          cp /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 ${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/
-          cp /usr/lib/x86_64-linux-gnu/libssl.so.1.1 ${{ env.INSTALL_APPIMAGE_DIR }}//usr/lib/
+          if [ -d "/home/runner/work/PrismLauncher/Qt/${{ matrix.qt_version }}/gcc_64/plugins/iconengines" ]; then
+            cp -r /home/runner/work/PrismLauncher/Qt/${{ matrix.qt_version }}/gcc_64/plugins/iconengines/* ${{ env.INSTALL_APPIMAGE_DIR }}/usr/plugins/iconengines/ || true
+          fi
 
-          LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib"
-          LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-8-openjdk/lib/amd64/server"
-          LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-8-openjdk/lib/amd64"
-          LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-17-openjdk/lib/server"
-          LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-17-openjdk/lib"
-          export LD_LIBRARY_PATH
+          if [ -f "${LIBDIR}/libcrypto.so.3" ]; then
+            cp "${LIBDIR}/libcrypto.so.3" ${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/ || true
+          fi
 
-          ./linuxdeploy-x86_64.AppImage --appdir ${{ env.INSTALL_APPIMAGE_DIR }} --output appimage --plugin qt -i ${{ env.INSTALL_APPIMAGE_DIR }}/usr/share/icons/hicolor/scalable/apps/org.prismlauncher.PrismLauncher.svg
+          if [ -f "${LIBDIR}/libssl.so.3" ]; then
+            cp "${LIBDIR}/libssl.so.3" ${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/ || true
+          fi
 
+          export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib"
+          export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${JAVA8_SERVER_PATH}"
+          export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${JAVA8_BASE_PATH}"
+          export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-17-openjdk/lib/server"
+          export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${{ env.INSTALL_APPIMAGE_DIR }}/usr/lib/jvm/java-17-openjdk/lib"
+
+          ./mkappimage ${{ env.INSTALL_APPIMAGE_DIR }} "$OUTPUT"
       ##
       # UPLOAD BUILDS
       ##
@@ -479,36 +506,36 @@ jobs:
         if: runner.os == 'Linux' && matrix.qt_ver != 6
         uses: actions/upload-artifact@v3
         with:
-          name: PrismLauncher-${{ runner.os }}-${{ env.VERSION }}-${{ inputs.build_type }}
-          path: PrismLauncher.tar.gz
+          name: PrismLauncher-Linux-${{ env.VERSION }}-${{ inputs.build_type }}
+          path: PrismLauncher-*.tar.gz
 
       - name: Upload binary tarball (Linux, portable, Qt 5)
         if: runner.os == 'Linux' && matrix.qt_ver != 6
         uses: actions/upload-artifact@v3
         with:
-          name: PrismLauncher-${{ runner.os }}-Portable-${{ env.VERSION }}-${{ inputs.build_type }}
-          path: PrismLauncher-portable.tar.gz
+          name: PrismLauncher-Linux-Portable-${{ env.VERSION }}-${{ inputs.build_type }}
+          path: PrismLauncher-portable-*.tar.gz
 
       - name: Upload binary tarball (Linux, Qt 6)
-        if: runner.os == 'Linux' && matrix.qt_ver !=5
+        if: runner.os == 'Linux' && matrix.qt_ver != 5
         uses: actions/upload-artifact@v3
         with:
-          name: PrismLauncher-${{ runner.os }}-Qt6-${{ env.VERSION }}-${{ inputs.build_type }}
-          path: PrismLauncher.tar.gz
+          name: PrismLauncher-${{ matrix.name }}-Qt6-${{ env.VERSION }}-${{ inputs.build_type }}
+          path: PrismLauncher-*.tar.gz
 
       - name: Upload binary tarball (Linux, portable, Qt 6)
         if: runner.os == 'Linux' && matrix.qt_ver != 5
         uses: actions/upload-artifact@v3
         with:
-          name: PrismLauncher-${{ runner.os }}-Qt6-Portable-${{ env.VERSION }}-${{ inputs.build_type }}
-          path: PrismLauncher-portable.tar.gz
+          name: PrismLauncher-${{ matrix.name }}-Qt6-Portable-${{ env.VERSION }}-${{ inputs.build_type }}
+          path: PrismLauncher-portable-*.tar.gz
 
       - name: Upload AppImage (Linux)
-        if: runner.os == 'Linux' && matrix.qt_ver != 5
+        if: runner.os == 'Linux' && matrix.qt_ver != 5 && matrix.name != 'Linux-aarch64'
         uses: actions/upload-artifact@v3
         with:
-          name: PrismLauncher-${{ runner.os }}-${{ env.VERSION }}-${{ inputs.build_type }}-x86_64.AppImage
-          path: PrismLauncher-${{ runner.os }}-${{ env.VERSION }}-${{ inputs.build_type }}-x86_64.AppImage
+          name: PrismLauncher-${{ matrix.name }}-${{ env.VERSION }}-${{ inputs.build_type }}.AppImage
+          path: PrismLauncher-Linux-*.AppImage
   snap:
     runs-on: ubuntu-20.04
     steps:
@@ -517,16 +544,19 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: 'true'
+
       - name: Set short version
         shell: bash
         if: inputs.build_type == 'Debug'
         run: |
           ver_short=`git rev-parse --short HEAD`
           echo "VERSION=$ver_short" >> $GITHUB_ENV
+
       - name: Package Snap (Linux)
         id: snapcraft
         if: inputs.build_type == 'Debug'
         uses: snapcore/action-build@v1
+
       - name: Upload Snap (Linux)
         if: inputs.build_type == 'Debug'
         uses: actions/upload-artifact@v3
@@ -545,15 +575,17 @@ jobs:
         if: inputs.build_type == 'Debug'
         with:
           submodules: 'true'
+
       - name: Build Flatpak (Linux)
         if: inputs.build_type == 'Debug'
         uses: flatpak/flatpak-github-actions/flatpak-builder@v4
         with:
           bundle: "Prism Launcher.flatpak"
-          manifest-path: flatpak/org.prismlauncher.PrismLauncher.yml 
+          manifest-path: flatpak/org.prismlauncher.PrismLauncher.yml
           cache-key: flatpak-${{ github.sha }}-x86_64
-
+          
   nix:
+    if: false
     runs-on: ubuntu-latest
     strategy:
       matrix:
