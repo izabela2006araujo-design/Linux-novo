@@ -6,29 +6,29 @@ on:
       - '*'
 
 jobs:
+   build_release:
+     name: Build Release
+     uses: ./.github/workflows/build.yml
+     with:
+       build_type: Release
+       is_qt_cached: false
+     secrets: inherit
 
-  build_release:
-    - name: Build Release
-      uses: ./.github/workflows/build.yml
-      with:
-      build_type: Release
-      is_qt_cached: false
-      secrets:
-   SPARKLE_ED25519_KEY: ${{ secrets.SPARKLE_ED25519_KEY }}
-
-  create_release:
-      needs: build_release
-      runs-on: ubuntu-latest
-      outputs:
+   create_release:
+    needs: build_release
+    runs-on: ubuntu-latest
+    outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
-      steps:
+    steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: 'true'
           path: 'PrismLauncher-source'
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
+
       - name: Grab and store version
         run: |
           tag_name=$(echo ${{ github.ref }} | grep -oE "[^/]+$")
